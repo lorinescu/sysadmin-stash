@@ -1,0 +1,154 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# <Plugin exec>
+#        Exec nobody "/some/where/haproxy-stats-collector" "/etc/haproxy/haproxy.cfg"
+# </Plugin>
+
+import sys
+import socket
+import operator
+import json
+import re
+import time
+import os
+
+def main():
+
+   columns = ['pxname','svname','qcur','qmax','scur','smax','slim','stot','bin','bout','dreq','dresp','ereq','econ','eresp','wretr','wredis','status','weight','act','bck','chkfail','chkdown','lastchg','downtime','qlimit','pid','iid','sid','throttle','lbtot','tracked','type','rate','rate_lim','rate_max','check_status','check_code','check_duration','hrsp_1xx','hrsp_2xx','hrsp_3xx','hrsp_4xx','hrsp_5xx','hrsp_other','hanafail','req_rate','req_rate_max','req_tot','cli_abrt','srv_abrt','comp_in','comp_out','comp_byp','comp_rsp','lastsess','last_chk','last_agt','qtime','ctime','rtime','ttime']
+
+   metrics = ['qcur','qmax','qtime','ctime','rtime','ttime','scur','smax','slim','stot','bin','bout','dreq','dresp','ereq','econ','eresp','wretr','wredis','chkfail','chkdown','downtime','rate','rate_max','hrsp_1xx','hrsp_2xx','hrsp_3xx','hrsp_4xx','hrsp_5xx','hrsp_other','req_rate','req_rate_max','req_tot','comp_in','comp_out','comp_byp','comp_rsp']
+
+   myHost = os.getenv('COLLECTD_HOSTNAME') 
+   interval = os.getenv('COLLECTD_INTERVAL')
+
+   configurationFile = sys.argv[1]
+  
+   statFiles = find(configurationFile)
+
+   while 42:
+
+        time.sleep(float(interval))
+         
+        raw = fetch(statFiles)
+
+        parsed = parse(raw, columns)
+
+        aggregated = aggregate(parsed, metrics)
+
+        #print json.dumps(aggregated)
+   
+        printToCollectd(aggregated, metrics, myHost, interval)
+
+def printToCollectd(proxies,metrics, host, interval):
+
+   results = []
+   out = ''
+   for proxyId in proxies.keys():
+      
+      proxy = proxies[proxyId]
+
+      for metric in metrics:
+
+         pxname = re.sub(r"\.", r'_', proxy['pxname'])
+         svname = re.sub(r"\.", r'_', proxy['svname'])
+
+         value = proxy[metric]
+
+         out +='PUTVAL "' + host + '/haproxy-'+pxname+'/derive' + '-' + svname + "." + metric + '" interval='+str(interval)+' N:'+str(value)+'\n'
+
+   print out.rstrip('\n')
+
+   sys.stdout.flush()
+
+
+def find(configurationFile):
+   statFiles = []
+   with open(configurationFile,'rb')  as f:
+      for line in f:
+         items = line.strip().split()
+         if len(items) > 2 and items[0] == 'stats' and items[1] == 'socket':
+            statFiles.append(items[2])
+
+   return statFiles
+
+def aggregate(datas, metrics):
+
+   proxies = {}
+   for data in datas:
+      #collectd/graphite friendly - replace dots with _
+      #proxyId = re.sub(r"\.", r'_', data['pxname']) +'.'+data['svname']
+      proxyId = data['iid'] + '-' + data['sid']
+      if proxyId not in proxies:
+         proxies[proxyId] = []
+
+      proxies[proxyId].append(data)
+
+   # sum all metrics across processes
+   aggregated = {}
+   for proxyId in proxies.keys():
+
+      aggregated[proxyId] = {}
+
+      for metric in metrics:
+         aggregated[proxyId][metric] = reduce(operator.add, [convertToInt(x[metric]) for x in proxies[proxyId]], 0)
+         aggregated[proxyId]['pxname'] = proxies[proxyId][0]['pxname']
+         aggregated[proxyId]['svname'] = proxies[proxyId][0]['svname']
+
+   return aggregated
+      
+def convertToInt(x):
+   try:
+      return int(x)
+   except ValueError:
+      return 0
+
+def parse(data, columns):
+
+   lines = data.split('\n')
+
+   results = []
+   for line in lines:
+      if line.startswith('#') or len(line) < 2:
+         continue
+      items = line.split(',')
+      mappedLine = mapLine(items, columns)
+      results.append(mappedLine)
+      
+   return results
+
+def mapLine(items, columns):
+
+   result = {}
+
+   result = dict([(columns[index], items[index]) for index in range(0,len(items)-1)])
+
+   return result
+   
+def fetch(statFiles):
+
+   data = ''
+   for statFile in statFiles:
+
+      sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+      sock.connect(statFile)
+
+      message = 'show stat\n'
+      sock.sendall(message)
+
+      while True:
+
+         buf = sock.recv(1024)
+
+         if len(buf) < 1 :
+            break
+
+         data += buf
+
+      sock.close()
+
+   return data
+         
+
+if __name__ == '__main__':
+   main()

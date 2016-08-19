@@ -1,0 +1,190 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import MySQLdb
+import MySQLdb.cursors
+import getopt
+import sys
+import re
+import os
+import pprint
+import string
+from pygraphviz import *
+import time
+
+#Dumper :P
+pp =  pprint.PrettyPrinter(indent=4)
+
+mapFile = '/var/www/db_map.png'
+
+dbservers = [
+		'dbruser1.acme.net', 'dbrferrari4.acme.net', 'dbrferrari9.acme.net',
+		'dbrlog1.acme.net', 'dbrlog3.acme.net', 'dbrfat3.acme.net','dbrfat4.acme.net',
+		'dbrferrari1.acme.net', 'dbrferrari2.acme.net', 'dbrferrari3.acme.net', 'dbrferrari5.acme.net',
+		'dbrfat1.acme.net','dbrfat2.acme.net', 'dbrfat5.acme.net','dbrfat7.acme.net',
+		'dbraux1.acme.net','dbraux2.acme.net', 'dbrferrari6.acme.net','dbrferrari7.acme.net',
+		'science1.acme.net'
+
+	    ]
+
+dbvips = [ 'dbv1','dbv1-slave1','dbv1-slave2', 'dbv1-slave3',
+	   'dbv1-slave4', 'dbv1-slave5',
+	   'dbv2', 'dbv2-slave1',
+	   'dbv3', 'dbv3-slave1',
+	   'dbv5', 'dbv5-slave1',
+	   'dbv4', 'dbv4-slave1', 'dbv4-slave2',
+	   'dbv6', 'dbv6-slave1'
+	   ]
+
+# create the replication graph
+db_status = {}
+for dbserver in dbservers:
+        if dbserver not in db_status:
+		db_status[dbserver]={} 
+
+	db_status[dbserver]['up'] = True
+        try:
+                db = MySQLdb.connect(connect_timeout=5,host=dbserver, user='leuser', passwd='lepassword',cursorclass = MySQLdb.cursors.DictCursor )
+        except:
+		db_status[dbserver]['up'] = False
+                continue
+
+        cursor = db.cursor()
+        cursor.execute("SHOW VARIABLES LIKE 'version'")
+                
+        result = cursor.fetchone()
+
+        ver = result['Value']
+        db_status[dbserver]['version']=ver[0:6]
+
+        #pp.pprint(db_status[dbserver]['version'])
+
+        cursor.execute("SHOW SLAVE STATUS");        
+        result= cursor.fetchone()
+
+	if 'master' not in db_status[dbserver]:
+		db_status[dbserver]['master'] = 'ROOT'
+	if 'is_slave' not in db_status[dbserver]:
+		db_status[dbserver]['is_slave'] = False 
+
+	if 'is_master' not in db_status[dbserver]: 
+		db_status[dbserver]['is_master'] = False 
+
+	db_status[dbserver]['replication_running'] = False 
+
+	try:
+		if result['Slave_IO_Running'] == 'Yes' or result['Slave_SQL_Running'] == 'Yes':
+			db_status[dbserver]['is_slave'] = True
+			db_status[dbserver]['replication_running'] = True 
+		if result['Slave_IO_Running'] == 'No' or result['Slave_SQL_Running'] == 'No':
+			db_status[dbserver]['replication_running'] = False 
+	except:
+		#likely a standalone server
+       		db_status[dbserver]['is_slave'] = False
+		db_status[dbserver]['is_master'] = True 
+		db_status[dbserver]['replication_running'] = False 
+		
+        try:
+		master = result['Master_Host']
+                db_status[dbserver]['master'] = master
+
+		if master in dbservers:
+
+			if master not in db_status:
+				db_status[master] = {}
+			db_status[master]['is_master'] = True 
+	
+        except:
+                db_status[dbserver]['master'] = "ROOT"
+		db_status[dbserver]['is_master'] = True
+		db_status[dbserver]['is_slave'] = False 
+
+	
+# add the IP aliases
+for dbvip in dbvips:
+	
+	vip = dbvip + '.acme.net'
+
+        try:
+                db = MySQLdb.connect(connect_timeout=5,host=vip, user='leuser', passwd='lepassword',cursorclass = MySQLdb.cursors.DictCursor )
+        except:
+                continue
+
+        cursor = db.cursor()
+        cursor.execute("SHOW VARIABLES LIKE 'hostname'")
+                
+        result = cursor.fetchone()
+
+        dbserver = result['Value']
+	if not dbserver.endswith('acme.net'):
+		dbserver += '.acme.net'
+
+        if 'vips' not in db_status[dbserver]:
+		db_status[dbserver]['vips'] = []
+
+	db_status[dbserver]['vips'].append(dbvip)
+
+#pp.pprint(db_status)
+
+db_map=AGraph(directed=True)
+db_map.graph_attr['label']='Database Replication Situation, at: '+time.asctime()
+db_map.graph_attr['labelloc']='t'
+db_map.graph_attr['fontsize']= '8'
+db_map.graph_attr['rankdir']='RL'
+#db_map.graph_attr['ordering']='out'
+db_map.edge_attr['minlen']='1.4'
+db_map.node_attr['fixedsize']='true'
+db_map.node_attr['height']='1'
+db_map.node_attr['width']='4.5'
+#db_map.node_attr['color']='black'
+db_map.edge_attr['style']="solid"
+db_map.node_attr['shape']='box3d'
+
+# nodes
+for key in db_status:
+
+	label = ''
+	vips  = ''
+	version = '?'
+
+	color = 'black'
+	if not db_status[key]['up']:
+
+		color = 'red'
+	else:
+
+		version = db_status[key]['version']
+
+		if db_status[key]['is_master']:
+			label += "M"
+		if db_status[key]['is_slave']:
+			label += "S"
+
+		vips = None
+		if 'vips' in db_status[key]:
+			vips = '['+ ','.join(db_status[key]['vips']) + ']'
+
+			
+	db_map.node_attr['color'] = color
+	nodeLabel = key + '('+label+')'+'\\n mysql: '+ version
+	if vips is not None:
+		nodeLabel += '\\n VIPs: ' + vips 
+
+        db_map.node_attr['label'] = nodeLabel
+        db_map.add_node(key)
+
+# edges
+for key in db_status:
+
+	if not db_status[key]['up']:
+		continue
+
+	if db_status[key]['is_slave']:
+		if not db_status[key]['replication_running']:
+			db_map.edge_attr['style']="dotted"
+		db_map.edge_attr['dir']="back"
+		db_map.add_edge(key,db_status[key]['master'])
+
+
+db_map.draw(mapFile,prog='dot')
+

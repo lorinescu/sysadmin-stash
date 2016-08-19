@@ -1,0 +1,59 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import sys
+import httplib
+import argparse
+
+JENKINS_HOST = 'jenkins.acme.net:8080'
+JENKINS_URL  = '/job/{JOB}/build?token=acmeOfficialPassword&cause=scmHook'
+
+# repo -> branch -> jenkins job
+BUILDERS = { 'CoolServer' : 
+		{ 'RC'     : 'CoolServerRC',
+		  'master' : 'CoolServer'
+		},
+	     'webops' :
+		{ 'master' : 'webops'
+		}
+}
+				  
+ 
+def main():
+
+	# arguments
+	parser = argparse.ArgumentParser(description='''Request a build from Jenkins.''')   
+	parser.add_argument('--repo', 
+			help     = 'specify the repo name', 
+			required = True,
+			choices  = BUILDERS.keys())
+
+	args = parser.parse_args()
+
+	repo = args.repo
+
+	args = [x.rstrip() for x in sys.stdin.readline().split(' ')]
+	if len(args) != 3:
+		print "Expecting 3 parameters. Was I not called from git hook ?"
+		sys.exit(1)
+
+	old    = args[0]
+	new    = args[1]
+	branch = args[2].split('/')[2]	
+
+	# request a build with the commit it from jenkins
+	try:
+		jenkinsJob = BUILDERS[repo][branch]
+	except:
+		print 'No builder available for repo [' + repo + '] and branch [' + branch + ']'
+		sys.exit(1)
+
+	jenkins = httplib.HTTPConnection(JENKINS_HOST)
+	jenkins.request("GET", JENKINS_URL.format(JOB=jenkinsJob))
+        response = jenkins.getresponse()
+	#print response.status, response.reason, response.read(), response.getheaders()
+	
+	sys.exit(0)
+ 
+if __name__ == '__main__':
+	main() 

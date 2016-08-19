@@ -1,0 +1,126 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import sys
+import re
+import pprint
+
+def main():
+
+    pp = pprint.PrettyPrinter(indent=4)
+
+    f = open(sys.argv[1],"r")
+
+
+    stats = {}
+    stats['ssl'] = {}
+    stats['timers'] = {}
+    stats['http'] = {}
+
+    stats['ssl']['ssl_handshake_failure'] = 0
+    stats['timers']['Tq'] = []
+    stats['timers']['Tw'] = []
+    stats['timers']['Tc'] = []
+    stats['timers']['Tr'] = []
+    stats['timers']['Tt'] = []
+    stats['http']['status_code'] = {}
+    stats['http']['bytes_read'] = []
+    stats['termState'] = {}
+
+    #actconn '/' feconn '/' beconn '/' srv_conn '/' retries*
+    #srv_queue '/' backend_queue
+    total = 0
+    for line in f:
+
+        total +=1
+
+        #Feb 10 09:46:47 lb1 haproxy[8872]: 171.60.10.124:53366 [10/Feb/2014:09:46:24.767] some.proxy.com_ssl/1: SSL handshake failure
+        #Feb 10 09:46:54 lb1 haproxy[8872]: 198.228.234.189:61386 [10/Feb/2014:09:46:45.777] some.other.proxy.com_ssl~ backend_pool/server1 429/0/0/8330/8759 500 296   ---- 2835/1039/67/7/0 0/0 "GET /foo/bar/?a=3&b=3 HTTP/1.1
+
+        #http://cbonte.github.io/haproxy-dconv/configuration-1.5.html#8.2.3
+        items = re.split('\s+', line)
+
+        syslogDate = items[0] + ' ' + items[1] + ' ' + items[2]
+        syslogHost = items[3]
+        syslogProcess = items[4]
+        
+        clientIp,clientPort = items[5].split(':')
+
+        hpDate = items[6]
+
+        hpFrontend = items[7]
+
+        if items[8] == 'SSL':
+            stats['ssl']['ssl_handshake_failure'] += 1
+            continue
+
+        backend,server = items[8].split('/')
+
+        Tq,Tw,Tc,Tr,Tt = items[9].split('/')
+
+        stats['timers']['Tq'].append(int(Tq))
+        stats['timers']['Tw'].append(int(Tw))
+        stats['timers']['Tc'].append(int(Tc))
+        stats['timers']['Tr'].append(int(Tr))
+        stats['timers']['Tt'].append(int(Tt))
+
+        httpCode = items[10]
+        if httpCode not in stats['http']['status_code'].keys():
+            stats['http']['status_code'][httpCode] = 0
+
+        stats['http']['status_code'][httpCode] +=1
+
+        bytesTransfered = items[11]
+
+        termState = items[12]
+        if termState not in stats['termState'].keys():
+            stats['termState'][termState] = 0
+
+        stats['termState'][termState] += 1
+        
+        #print syslogDate + ',' + syslogHost + ',' + syslogProcess + ',' + clientIp + ':' + clientPort
+    	  
+    
+    summary = {}
+    summary['total_log_lines'] = total
+    summary['timers'] = {}
+    summary['timers']['Tq'] = {}
+    summary['timers']['Tw'] = {}
+    summary['timers']['Tc'] = {}
+    summary['timers']['Tr'] = {}
+    summary['timers']['Tt'] = {}
+    summary['ssl'] = stats['ssl'];
+    summary['http'] = stats['http']
+    summary['termState'] = stats['termState']
+
+    for t in stats['timers'].keys():
+
+        summary['timers'][t]['total']   = 0
+        summary['timers'][t]['average'] = 0
+        summary['timers'][t]['max']     = 0
+
+        count = 0
+        for value in stats['timers'][t]:
+
+            #connection dropped
+            #if value == '-1':
+            #    continue
+
+            summary['timers'][t]['total'] += value
+
+            if  value > summary['timers'][t]['max']:
+                 summary['timers'][t]['max'] = value
+
+            count += 1
+
+        summary['timers'][t]['average'] = summary['timers'][t]['total'] / count
+
+    pp.pprint(summary)
+                                                               
+    #print stats['state']
+
+    f.close()
+
+
+if __name__ == "__main__":
+    main()
